@@ -985,6 +985,64 @@ func TestTracingNestedSpans(t *testing.T) {
 	}
 }
 
+func TestInitTracingNoOpWithoutSandboxID(t *testing.T) {
+	// Previously: callers had to pass a sandbox id explicitly. Now
+	// InitTracing("") falls back to KEYSTONE_SANDBOX_ID, and if that's
+	// empty too the returned context no-ops rather than spamming POSTs.
+	t.Setenv("KEYSTONE_SANDBOX_ID", "")
+
+	ks := NewClient(Config{BaseURL: "http://127.0.0.1:1"})
+	tc := ks.InitTracing("")
+	if tc == nil {
+		t.Fatal("InitTracing returned nil")
+	}
+	if tc.sandboxID != "" {
+		t.Fatalf("expected empty sandbox id, got %q", tc.sandboxID)
+	}
+
+	// Traced should pass fn through without emitting any events and
+	// without trying to reach the (non-listening) base URL.
+	called := false
+	err := tc.Traced(context.Background(), "noop", func() error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Traced returned error: %v", err)
+	}
+	if !called {
+		t.Fatalf("Traced did not invoke fn")
+	}
+}
+
+func TestInitTracingReadsEnv(t *testing.T) {
+	t.Setenv("KEYSTONE_SANDBOX_ID", "sb-from-env")
+	ks := NewClient(Config{BaseURL: "http://127.0.0.1:1"})
+	tc := ks.InitTracing("")
+	if tc.sandboxID != "sb-from-env" {
+		t.Fatalf("env fallback failed: %q", tc.sandboxID)
+	}
+}
+
+func TestWrapTransportNoOpWithoutSandboxID(t *testing.T) {
+	t.Setenv("KEYSTONE_SANDBOX_ID", "")
+	ks := NewClient(Config{BaseURL: "http://127.0.0.1:1"})
+	base := http.DefaultTransport
+	wrapped := WrapTransport(ks, "", base)
+	if wrapped != base {
+		t.Fatalf("expected passthrough to base transport, got wrapper %T", wrapped)
+	}
+}
+
+func TestWrapTransportReadsEnv(t *testing.T) {
+	t.Setenv("KEYSTONE_SANDBOX_ID", "sb-123")
+	ks := NewClient(Config{BaseURL: "http://127.0.0.1:1"})
+	wrapped := WrapTransport(ks, "", http.DefaultTransport)
+	if _, ok := wrapped.(*keystoneTransport); !ok {
+		t.Fatalf("expected keystoneTransport wrapper, got %T", wrapped)
+	}
+}
+
 func TestAgentPageList(t *testing.T) {
 	_, ts := newMockServer(t)
 	defer ts.Close()
