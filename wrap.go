@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -25,16 +26,21 @@ type keystoneTransport struct {
 // WrapTransport returns an http.RoundTripper that intercepts LLM API responses,
 // extracts tool calls, and reports them to Keystone. Use it with any Go LLM SDK.
 //
+// The sandbox id is optional — resolution order matches the Python + TS SDKs:
+//  1. explicit argument
+//  2. KEYSTONE_SANDBOX_ID env var (Keystone injects this into sandboxed agent processes)
+//  3. neither → WrapTransport returns `base` unchanged (no-op, safe for local dev / CI)
+//
 // Usage — one line:
 //
 //	anthropicClient := anthropic.NewClient(option.WithHTTPClient(&http.Client{
-//	    Transport: keystone.WrapTransport(ks, sandboxID, http.DefaultTransport),
+//	    Transport: keystone.WrapTransport(ks, "", http.DefaultTransport),  // env auto-detected
 //	}))
 //
 // Or for OpenAI:
 //
 //	openaiClient := openai.NewClient(option.WithHTTPClient(&http.Client{
-//	    Transport: keystone.WrapTransport(ks, sandboxID, http.DefaultTransport),
+//	    Transport: keystone.WrapTransport(ks, "", http.DefaultTransport),
 //	}))
 //
 // The wrapper only intercepts POST requests to paths containing "/messages" or
@@ -44,6 +50,15 @@ type keystoneTransport struct {
 func WrapTransport(client *Client, sandboxID string, base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
+	}
+	// Resolution mirrors Python/TS (wrap): explicit arg → KEYSTONE_SANDBOX_ID
+	// env → no-op. Returning `base` unchanged when neither source yields an
+	// id keeps local-dev / CI callers from paying the trace-reporting cost.
+	if sandboxID == "" {
+		sandboxID = os.Getenv("KEYSTONE_SANDBOX_ID")
+	}
+	if sandboxID == "" {
+		return base
 	}
 	return &keystoneTransport{
 		client:    client,

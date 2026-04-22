@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"sync"
 	"time"
 )
@@ -55,14 +56,24 @@ type TracingContext struct {
 	currentSpanID string
 }
 
-// InitTracing creates a tracing context for the given sandbox.
-// After calling this, use Traced() to auto-report tool spans.
+// InitTracing creates a tracing context for a sandbox.
 //
-//	tc := ks.InitTracing("sb-xxx")
+// Resolution order for the sandbox id:
+//  1. explicit argument
+//  2. KEYSTONE_SANDBOX_ID env var (Keystone injects this when your agent
+//     runs inside a sandbox — you shouldn't set it manually)
+//  3. neither → returns a no-op TracingContext whose Traced() passes
+//     through without emitting any trace events. Matches the Python + TS
+//     SDKs' "wrap does nothing outside a sandbox" behavior.
+//
+//	tc := ks.InitTracing("")  // picks up KEYSTONE_SANDBOX_ID
 //	tc.Traced(ctx, "write_file", func() error {
 //	    return os.WriteFile(path, content, 0644)
 //	})
 func (c *Client) InitTracing(sandboxID string) *TracingContext {
+	if sandboxID == "" {
+		sandboxID = os.Getenv("KEYSTONE_SANDBOX_ID")
+	}
 	return &TracingContext{
 		client:    c,
 		sandboxID: sandboxID,
@@ -71,7 +82,12 @@ func (c *Client) InitTracing(sandboxID string) *TracingContext {
 
 // Traced executes fn inside a traced span. It auto-captures start time,
 // duration, and error status. Nested Traced calls create parent-child spans.
+// When the TracingContext has no sandbox id (outside a Keystone sandbox),
+// Traced runs fn transparently without emitting any events.
 func (tc *TracingContext) Traced(ctx context.Context, name string, fn func() error) error {
+	if tc == nil || tc.sandboxID == "" {
+		return fn()
+	}
 	spanID := makeSpanID()
 
 	tc.mu.Lock()
