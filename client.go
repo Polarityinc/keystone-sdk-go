@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultBaseURL = "https://keystone.ngrok-free.dev"
+	defaultBaseURL = "https://keystone.polarity.so"
 	defaultTimeout = 30 * time.Second
 	apiKeyHeader   = "X-API-Key"
 	apiKeyEnvVar   = "KEYSTONE_API_KEY"
