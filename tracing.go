@@ -56,15 +56,16 @@ type TracingContext struct {
 	currentSpanID string
 }
 
-// InitTracing creates a tracing context for a sandbox.
+// InitTracing creates a tracing context.
 //
-// Resolution order for the sandbox id:
-//  1. explicit argument
-//  2. KEYSTONE_SANDBOX_ID env var (Keystone injects this when your agent
-//     runs inside a sandbox — you shouldn't set it manually)
-//  3. neither → returns a no-op TracingContext whose Traced() passes
-//     through without emitting any trace events. Matches the Python + TS
-//     SDKs' "wrap does nothing outside a sandbox" behavior.
+// Two modes:
+//  1. Sandbox mode — explicit `sandboxID` arg or KEYSTONE_SANDBOX_ID env var.
+//     Traced() spans post to /v1/sandboxes/:id/trace and nest under the run.
+//  2. Agent mode — no sandbox id, but the Client has an API key. Traced()
+//     spans post to /v1/traces, scoped to the API key server-side. This is
+//     the prod-observability path: any agent with a ks_live_ key gets full
+//     tool traces tied to the billing owner, no sandbox required.
+//  3. Neither — returns a no-op whose Traced() just runs fn().
 //
 //	tc := ks.InitTracing("")  // picks up KEYSTONE_SANDBOX_ID
 //	tc.Traced(ctx, "write_file", func() error {
@@ -76,16 +77,21 @@ func (c *Client) InitTracing(sandboxID string) *TracingContext {
 	}
 	return &TracingContext{
 		client:    c,
-		sandboxID: sandboxID,
+		sandboxID: sandboxID, // may be "" — postEvent routes to /v1/traces in that case
 	}
 }
 
 // Traced executes fn inside a traced span. It auto-captures start time,
 // duration, and error status. Nested Traced calls create parent-child spans.
-// When the TracingContext has no sandbox id (outside a Keystone sandbox),
-// Traced runs fn transparently without emitting any events.
+// Without a sandbox id, Traced still emits events to /v1/traces when the
+// Client has an API key (agent mode). If neither is set, Traced runs fn
+// transparently without emitting any events.
 func (tc *TracingContext) Traced(ctx context.Context, name string, fn func() error) error {
-	if tc == nil || tc.sandboxID == "" {
+	if tc == nil {
+		return fn()
+	}
+	// No sandbox AND no API key → nothing to report to. Pass through.
+	if tc.sandboxID == "" && (tc.client == nil || tc.client.apiKey == "") {
 		return fn()
 	}
 	spanID := makeSpanID()
@@ -151,7 +157,13 @@ func (tc *TracingContext) postEvent(event TraceEvent) {
 		defer cancel()
 
 		payload := map[string]any{"events": []TraceEvent{event}}
-		tc.client.doJSON(ctx, "POST", "/v1/sandboxes/"+url.PathEscape(tc.sandboxID)+"/trace", payload)
+		var path string
+		if tc.sandboxID != "" {
+			path = "/v1/sandboxes/" + url.PathEscape(tc.sandboxID) + "/trace"
+		} else {
+			path = "/v1/traces"
+		}
+		tc.client.doJSON(ctx, "POST", path, payload)
 	}()
 }
 
