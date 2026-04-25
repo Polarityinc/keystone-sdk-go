@@ -121,6 +121,9 @@ func WithCursor(c string) ListOption { return func(o *listOpts) { o.cursor = c }
 func (s *AgentService) List(ctx context.Context, opts ...ListOption) (*AgentPage, error) {
 	o := listOpts{limit: 100}
 	for _, fn := range opts {
+		if fn == nil {
+			continue // callers passing `nil` as "no options" should not crash
+		}
 		fn(&o)
 	}
 	path := fmt.Sprintf("/v1/agents?limit=%d", o.limit)

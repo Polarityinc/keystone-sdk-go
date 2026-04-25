@@ -26,10 +26,14 @@ type keystoneTransport struct {
 // WrapTransport returns an http.RoundTripper that intercepts LLM API responses,
 // extracts tool calls, and reports them to Keystone. Use it with any Go LLM SDK.
 //
-// The sandbox id is optional — resolution order matches the Python + TS SDKs:
-//  1. explicit argument
-//  2. KEYSTONE_SANDBOX_ID env var (Keystone injects this into sandboxed agent processes)
-//  3. neither → WrapTransport returns `base` unchanged (no-op, safe for local dev / CI)
+// Two modes, resolved in order:
+//  1. Sandbox mode — explicit `sandboxID` arg or KEYSTONE_SANDBOX_ID env var.
+//     Events POST to /v1/sandboxes/:id/trace and nest under the sandbox run.
+//  2. Agent mode — no sandbox id, but the Client has an API key. Events POST
+//     to /v1/traces and are scoped to the API key server-side. This is the
+//     prod-observability path: any agent running in prod with a ks_live_ key
+//     gets full LLM + tool traces tied to the billing owner.
+//  3. Neither — returns `base` unchanged (silent no-op for local dev / CI).
 //
 // Usage — one line:
 //
@@ -51,18 +55,17 @@ func WrapTransport(client *Client, sandboxID string, base http.RoundTripper) htt
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	// Resolution mirrors Python/TS (wrap): explicit arg → KEYSTONE_SANDBOX_ID
-	// env → no-op. Returning `base` unchanged when neither source yields an
-	// id keeps local-dev / CI callers from paying the trace-reporting cost.
 	if sandboxID == "" {
 		sandboxID = os.Getenv("KEYSTONE_SANDBOX_ID")
 	}
-	if sandboxID == "" {
+	// Sandbox unset AND no API key to fall back to → nothing to report to.
+	// Skip wrapping so we don't pay the parse-and-post cost for nothing.
+	if sandboxID == "" && (client == nil || client.apiKey == "") {
 		return base
 	}
 	return &keystoneTransport{
 		client:    client,
-		sandboxID: sandboxID,
+		sandboxID: sandboxID, // may be "" — parseAndReport routes to /v1/traces in that case
 		base:      base,
 	}
 }
@@ -253,7 +256,14 @@ func (t *keystoneTransport) parseAndReport(reqBody, respBody []byte, latency tim
 	defer cancel()
 
 	payload, _ := json.Marshal(map[string]any{"events": events})
-	traceURL := t.client.baseURL + "/v1/sandboxes/" + url.PathEscape(t.sandboxID) + "/trace"
+	var traceURL string
+	if t.sandboxID != "" {
+		traceURL = t.client.baseURL + "/v1/sandboxes/" + url.PathEscape(t.sandboxID) + "/trace"
+	} else {
+		// Agent mode — server resolves api_key_id from Bearer token and
+		// writes rows with sandbox_id = null.
+		traceURL = t.client.baseURL + "/v1/traces"
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, traceURL, bytes.NewReader(payload))
 	if err != nil {
 		return

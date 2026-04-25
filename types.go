@@ -41,6 +41,11 @@ type CreateSandboxRequest struct {
 	SpecID   string            `json:"spec_id"`
 	Timeout  int               `json:"timeout,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
+	// Secrets forwarded from the caller's local environment. Merged on the
+	// server with Dashboard-stored secrets for the billing owner; request
+	// values win on collision. Typical use: pair with LoadDeclaredEnvSecrets
+	// to auto-pull names listed in spec.secrets from os.Getenv.
+	Secrets map[string]string `json:"secrets,omitempty"`
 }
 
 // CommandRequest is the payload for running a command in a sandbox.
@@ -118,8 +123,13 @@ type Experiment struct {
 
 // CreateExperimentRequest is the payload for creating an experiment.
 type CreateExperimentRequest struct {
-	Name   string `json:"name"`
-	SpecID string `json:"spec_id"`
+	Name    string            `json:"name"`
+	SpecID  string            `json:"spec_id"`
+	// Secrets forwarded from the caller's local environment. Applied to
+	// every sandbox the experiment spins up. Merged server-side with
+	// Dashboard secrets; request values win. Pair with
+	// LoadDeclaredEnvSecrets to auto-pull names listed in spec.secrets.
+	Secrets map[string]string `json:"secrets,omitempty"`
 }
 
 // InvariantResult is a single invariant check outcome.
