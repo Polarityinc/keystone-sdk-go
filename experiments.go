@@ -14,9 +14,54 @@ type ExperimentService struct {
 	client *Client
 }
 
-// Create creates a new experiment.
+// ExperimentHandle is a bound wrapper around a single experiment.
+// Returned by Create, List, and Handle. Lets callers do
+// `exp.Run(ctx)` / `exp.Results(ctx)` / `exp.Compare(ctx, other)` instead of
+// threading the experiment ID through every service call.
+//
+// The embedded *Experiment makes existing field access (handle.ID,
+// handle.Status, etc) work unchanged.
+type ExperimentHandle struct {
+	*Experiment
+	svc *ExperimentService
+}
+
+// Run triggers an experiment run (async on the server).
+func (h *ExperimentHandle) Run(ctx context.Context) error {
+	return h.svc.Run(ctx, h.ID)
+}
+
+// RunAndWait runs the experiment and polls until completion.
+func (h *ExperimentHandle) RunAndWait(ctx context.Context, opts RunAndWaitOpts) (*RunResults, error) {
+	return h.svc.RunAndWait(ctx, h.ID, opts)
+}
+
+// Results fetches the full RunResults for this experiment.
+func (h *ExperimentHandle) Results(ctx context.Context) (*RunResults, error) {
+	return h.svc.Get(ctx, h.ID)
+}
+
+// Metrics fetches experiment-level metrics breakdown.
+func (h *ExperimentHandle) Metrics(ctx context.Context) (*ExperimentMetrics, error) {
+	return h.svc.Metrics(ctx, h.ID)
+}
+
+// Compare compares this experiment against another (handle or raw ID).
+func (h *ExperimentHandle) Compare(ctx context.Context, other *ExperimentHandle) (*Comparison, error) {
+	if other == nil || other.Experiment == nil {
+		return nil, fmt.Errorf("keystone: Compare: other handle is nil")
+	}
+	return h.svc.Compare(ctx, h.ID, other.ID)
+}
+
+// CompareID compares this experiment against another by raw ID.
+func (h *ExperimentHandle) CompareID(ctx context.Context, otherID string) (*Comparison, error) {
+	return h.svc.Compare(ctx, h.ID, otherID)
+}
+
+// Create creates a new experiment. Returns a bound handle.
 // POST /v1/experiments
-func (s *ExperimentService) Create(ctx context.Context, req CreateExperimentRequest) (*Experiment, error) {
+func (s *ExperimentService) Create(ctx context.Context, req CreateExperimentRequest) (*ExperimentHandle, error) {
 	data, err := s.client.doJSON(ctx, "POST", "/v1/experiments", req)
 	if err != nil {
 		return nil, err
@@ -25,7 +70,13 @@ func (s *ExperimentService) Create(ctx context.Context, req CreateExperimentRequ
 	if err := json.Unmarshal(data, &exp); err != nil {
 		return nil, fmt.Errorf("keystone: decoding experiment: %w", err)
 	}
-	return &exp, nil
+	return &ExperimentHandle{Experiment: &exp, svc: s}, nil
+}
+
+// Handle builds a bound handle from an experiment ID without making a
+// network call.
+func (s *ExperimentService) Handle(id string) *ExperimentHandle {
+	return &ExperimentHandle{Experiment: &Experiment{ID: id}, svc: s}
 }
 
 // Get retrieves an experiment's run results by ID.
@@ -42,9 +93,9 @@ func (s *ExperimentService) Get(ctx context.Context, id string) (*RunResults, er
 	return &results, nil
 }
 
-// List returns all experiments.
+// List returns all experiments as bound handles.
 // GET /v1/experiments
-func (s *ExperimentService) List(ctx context.Context) ([]*Experiment, error) {
+func (s *ExperimentService) List(ctx context.Context) ([]*ExperimentHandle, error) {
 	data, err := s.client.doJSON(ctx, "GET", "/v1/experiments", nil)
 	if err != nil {
 		return nil, err
@@ -53,7 +104,11 @@ func (s *ExperimentService) List(ctx context.Context) ([]*Experiment, error) {
 	if err := json.Unmarshal(data, &experiments); err != nil {
 		return nil, fmt.Errorf("keystone: decoding experiments: %w", err)
 	}
-	return experiments, nil
+	handles := make([]*ExperimentHandle, len(experiments))
+	for i, exp := range experiments {
+		handles[i] = &ExperimentHandle{Experiment: exp, svc: s}
+	}
+	return handles, nil
 }
 
 // Run triggers an experiment run.
