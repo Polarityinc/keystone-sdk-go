@@ -160,7 +160,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, payload any) (
 //
 //	ks, sb, err := keystone.FromSandbox(ctx)
 //	dbInfo := sb.Services["db"]  // host, port, ready
-func FromSandbox(ctx context.Context) (*Client, *Sandbox, error) {
+func FromSandbox(ctx context.Context) (*Client, *SandboxHandle, error) {
 	sandboxID := os.Getenv("KEYSTONE_SANDBOX_ID")
 	if sandboxID == "" {
 		return nil, nil, fmt.Errorf("keystone: KEYSTONE_SANDBOX_ID not set — not running inside a sandbox")

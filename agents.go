@@ -15,9 +15,25 @@ type AgentService struct {
 	client *Client
 }
 
+// AgentSnapshotHandle is a bound wrapper around a single snapshot. Returned
+// by Upload, Get, and GetByID. Lets callers do `snap.Delete(ctx)` instead of
+// `svc.Delete(ctx, snap)`.
+//
+// The embedded *AgentSnapshot makes existing field access (handle.ID,
+// handle.Version, handle.Digest, etc) work unchanged.
+type AgentSnapshotHandle struct {
+	*AgentSnapshot
+	svc *AgentService
+}
+
+// Delete deletes this snapshot.
+func (h *AgentSnapshotHandle) Delete(ctx context.Context) error {
+	return h.svc.DeleteSnapshot(ctx, h.ID)
+}
+
 // Upload uploads an agent snapshot. The bundle is a tarball (io.Reader).
-// Version is auto-assigned by the server.
-func (s *AgentService) Upload(ctx context.Context, req UploadSnapshotRequest, bundle io.Reader) (*AgentSnapshot, error) {
+// Version is auto-assigned by the server. Returns a bound handle.
+func (s *AgentService) Upload(ctx context.Context, req UploadSnapshotRequest, bundle io.Reader) (*AgentSnapshotHandle, error) {
 	// Build multipart form: "metadata" (JSON) + "bundle" (tarball).
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -47,7 +63,7 @@ func (s *AgentService) Upload(ctx context.Context, req UploadSnapshotRequest, bu
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return nil, fmt.Errorf("keystone: decoding snapshot: %w", err)
 	}
-	return &snap, nil
+	return &AgentSnapshotHandle{AgentSnapshot: &snap, svc: s}, nil
 }
 
 // GetOption configures how Get resolves a snapshot.
@@ -64,7 +80,8 @@ func WithVersion(v int) GetOption { return func(o *getOpts) { o.version = &v } }
 func WithTag(t string) GetOption { return func(o *getOpts) { o.tag = t } }
 
 // Get resolves a snapshot by name. Without options, returns the latest version.
-func (s *AgentService) Get(ctx context.Context, name string, opts ...GetOption) (*AgentSnapshot, error) {
+// Returns a bound handle.
+func (s *AgentService) Get(ctx context.Context, name string, opts ...GetOption) (*AgentSnapshotHandle, error) {
 	var o getOpts
 	for _, fn := range opts {
 		fn(&o)
@@ -88,11 +105,12 @@ func (s *AgentService) Get(ctx context.Context, name string, opts ...GetOption) 
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return nil, fmt.Errorf("keystone: decoding snapshot: %w", err)
 	}
-	return &snap, nil
+	return &AgentSnapshotHandle{AgentSnapshot: &snap, svc: s}, nil
 }
 
 // GetByID returns a snapshot by its immutable content-addressed ID.
-func (s *AgentService) GetByID(ctx context.Context, id string) (*AgentSnapshot, error) {
+// Returns a bound handle.
+func (s *AgentService) GetByID(ctx context.Context, id string) (*AgentSnapshotHandle, error) {
 	data, err := s.client.doJSON(ctx, "GET", "/v1/snapshots/"+url.PathEscape(id), nil)
 	if err != nil {
 		return nil, err
@@ -101,7 +119,13 @@ func (s *AgentService) GetByID(ctx context.Context, id string) (*AgentSnapshot, 
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return nil, fmt.Errorf("keystone: decoding snapshot: %w", err)
 	}
-	return &snap, nil
+	return &AgentSnapshotHandle{AgentSnapshot: &snap, svc: s}, nil
+}
+
+// HandleByID builds a bound handle from a snapshot ID without making a
+// network call.
+func (s *AgentService) HandleByID(id string) *AgentSnapshotHandle {
+	return &AgentSnapshotHandle{AgentSnapshot: &AgentSnapshot{ID: id}, svc: s}
 }
 
 // ListOption configures pagination for list operations.
@@ -117,10 +141,15 @@ func WithLimit(n int) ListOption { return func(o *listOpts) { o.limit = n } }
 // WithCursor sets the pagination cursor.
 func WithCursor(c string) ListOption { return func(o *listOpts) { o.cursor = c } }
 
-// List returns all agent snapshots with cursor pagination.
+// List returns all agent snapshots with cursor pagination. Items are raw
+// AgentSnapshots — wrap them in handles via HandleByID(snap.ID) if you need
+// to call snapshot-bound methods like Delete().
 func (s *AgentService) List(ctx context.Context, opts ...ListOption) (*AgentPage, error) {
 	o := listOpts{limit: 100}
 	for _, fn := range opts {
+		if fn == nil {
+			continue // callers passing `nil` as "no options" should not crash
+		}
 		fn(&o)
 	}
 	path := fmt.Sprintf("/v1/agents?limit=%d", o.limit)
@@ -161,6 +190,12 @@ func (s *AgentService) ListVersions(ctx context.Context, name string, opts ...Li
 
 // Delete removes a snapshot. Pass the AgentSnapshot object, not raw strings.
 func (s *AgentService) Delete(ctx context.Context, snapshot *AgentSnapshot) error {
-	_, err := s.client.doJSON(ctx, "DELETE", "/v1/snapshots/"+url.PathEscape(snapshot.ID), nil)
+	return s.DeleteSnapshot(ctx, snapshot.ID)
+}
+
+// DeleteSnapshot removes a snapshot by ID. (Used internally by
+// AgentSnapshotHandle.Delete.)
+func (s *AgentService) DeleteSnapshot(ctx context.Context, id string) error {
+	_, err := s.client.doJSON(ctx, "DELETE", "/v1/snapshots/"+url.PathEscape(id), nil)
 	return err
 }
